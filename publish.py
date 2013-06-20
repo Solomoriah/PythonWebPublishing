@@ -2,7 +2,7 @@
 #
 # Software License
 # 
-# Copyright (c) 2001-2007, Chris Gonnerman
+# Copyright 2001-2013 Chris Gonnerman
 # All rights reserved.
 # 
 # Redistribution and use in source and binary forms, with or without 
@@ -59,7 +59,7 @@ stored in lists because we will be storing a temporary flag there.
 """
 
 # my version numbers are usually strings
-__version__ = "1.8"
+__version__ = "2.0"
 
 import os, sys
 
@@ -152,6 +152,49 @@ class CopyFTP:
         pass
 
 ##########################################################################
+#  SecureFTP provides SFTP (SSH FTP) services using paramiko
+##########################################################################
+
+try:
+    import paramiko
+
+    class SecureFTP:
+        def __init__(self, hostname, port = 22):
+            self.hostname = hostname
+            self.transport = paramiko.Transport((hostname, port))
+        def mkd(self, d):
+            self.sftp.mkdir(d)
+        def cwd(self, d):
+            self.sftp.chdir(d)
+        def storbinary(self, cmd, file, blocksize = None):
+            fn = cmd[5:]
+            fp = self.sftp.open(fn, "w")
+            shutil.copyfileobj(file, fp)
+            fp.close()
+        def chmod(self, fn, mode):
+            self.sftp.chmod(fn, mode)
+        def voidcmd(self, cmd):
+            pass
+        def login(self, user, pwd):
+            self.transport.connect(username=user, password=pwd)
+            self.sftp = paramiko.SFTPClient.from_transport(self.transport)
+        def set_pasv(self, mode):
+            pass
+        def delete(self, fname):
+            self.sftp.remove(fname)
+        def quit(self):
+            if self.transport:
+                self.transport.close()
+                self.transport = None
+
+except ImportError:
+
+    class SecureFTP:
+        def __init__(self, hostname, port = 22):
+            raise NotImplementedError("Secure Login Not Available - paramiko not found.")
+
+
+##########################################################################
 #  Set Variables
 ##########################################################################
 
@@ -163,8 +206,9 @@ source = ""
 passive = 0
 chmod = 0
 mode = "ftp"
-zip = None
+zipf = None
 lowername = 0
+secure = None
 
 rc = 0
 
@@ -192,7 +236,7 @@ for i in optlist:
     elif i[0] == '--quiet' or i[0] == '-q':
         verbose = -1
     elif i[0] == '--zip':
-        zip = i[1]
+        zipf = i[1]
         mode = "zip"
     else:
         sys.stderr.write(usage)
@@ -301,7 +345,10 @@ def publish(path, ftp, leader, mode):
                     fp.close()
                     if chmod:
                         mode = os.stat(n)[0] & 0777
-                        ftp.voidcmd("SITE CHMOD " + oct(mode) + " " + t)
+                        if hasattr(ftp, "chmod"):
+                            ftp.chmod(t, mode)
+                        else:
+                            ftp.voidcmd("SITE CHMOD " + oct(mode) + " " + t)
                     uploads += 1
                 elif verbose > 0:
                     print leader + "skipping " + n
@@ -324,7 +371,7 @@ try:
 
     index = {}
 
-    if zip is None:
+    if zipf is None:
         try:
             fp = open("./.index", "r")
             indexdata = fp.read()
@@ -336,9 +383,13 @@ try:
     if mode == "touch":
         ftp = NullFTP()
     elif mode == "zip":
-        ftp = ZipFTP(zip)
+        ftp = ZipFTP(zipf)
     elif mode == "copy":
         ftp = CopyFTP()
+    elif secure:
+        if verbose >= 0:
+            print "secure login to " + host
+        ftp = SecureFTP(host)
     else:
         if verbose >= 0:
             print "logging on to " + host
@@ -359,7 +410,7 @@ try:
 
     publish(".", ftp, " ", mode)
 
-    if not zip:
+    if not zipf:
         if verbose >= 0:
             print "removing outdated files"
         for i in index.keys():
