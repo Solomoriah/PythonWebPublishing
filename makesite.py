@@ -38,10 +38,10 @@
 
 """makesite.py - build html files from source (.src) files
 
-With no options, makesite.py reads in the file template.site from
+With no options, makesite.py reads in the file(s) template.* from
 the current directory, and then reads in each file with the source
-extension (default .src) and creates a page combining the template.site
-file and the source file, saving the result with a .html extension.
+extension (default .src) and creates a page combining the template.*
+file(s) and the source file, saving the result with a .html extension.
 
 Both the source files and the template file are in a form similar to
 rfc822 messages, that is, headers, a blank line, and a body.  The headers
@@ -68,7 +68,7 @@ follows:
 
     makesite.py [ --template=file ] [ --dir=directory ] [ filename ...]
 
---template overrides the default template file, template.site.
+--template overrides the default template file pattern, "template.*".
 --dir specifies a directory to change to before processing begins.
 
 Filename options, if given, indicate that only the named source files
@@ -121,10 +121,13 @@ doesn't already have the given key.  Multiplying templates, like so:
 
 returns a string which is the result of applying the source file (tmpl2)
 to the template file (tmpl1) as given above.
+
+When input filename begins with a $ (dollar sign) it will be removed
+from the output filename.  This is handy for creating dotfiles.
 """
 
 # my version numbers are usually strings
-__version__ = "1.4"
+__version__ = "1.8"
 
 ######################################################################
 # module imports
@@ -157,7 +160,11 @@ _force = None
 _pause = None
 _directory = "."
 
+class Generic:
+    pass
+
 Macro = re.compile(r'<!--%(.*?)%-->')
+ExecMacro = re.compile(r'<!--!(.*?)!-->')
 
 def stampof(file):
     try:
@@ -171,17 +178,17 @@ class Template(UserDict.UserDict):
     __target = re.compile(r"([^:][^:]*): *(.*) *")
     __blank_target = re.compile(r" *\n$")
 
-    def __init__(self, file = None):
+    def __init__(self, file = None, mapping = None):
         UserDict.UserDict.__init__(self)
         if file is not None:
             self.Load(file)
+        if mapping is not None:
+            for k in mapping.keys():
+                Template.__setitem__(self, k, str(mapping[k]))
 
     def Load(self, file):
         self["_stamp"] = stampof(file)
         line = file.readline()
-        # rip off blank lines
-        while self.__blank_target.match(line):
-            line = file.readline()
         while line and not self.__blank_target.match(line):
             line = line[:-1]
             mo = self.__multi_target.match(line)
@@ -218,60 +225,72 @@ class Template(UserDict.UserDict):
                 else:
                     file.write(i + ": " + self[i] + "\n")
         file.write("\n")
-        file.write(self["body"])
+        file.write(string.join(self["body"],"\n"))
 
     def __getitem__(self, key):
-        if type(key) != type(""):
-            raise TypeError, "invalid key type"
-        return UserDict.UserDict.__getitem__(self, string.lower(key))
+        key = str(key)
+        rc = UserDict.UserDict.__getitem__(self, string.lower(key))
+        return rc
 
     def __setitem__(self, key, value):
-        if type(key) != type(""):
-            raise TypeError, "invalid key type"
+        key = str(key)
         return UserDict.UserDict.__setitem__(self, string.lower(key), value)
 
     def __delitem__(self, key):
-        if type(key) != type(""):
-            raise TypeError, "invalid key type"
+        key = str(key)
         return UserDict.UserDict.__setitem__(self, string.lower(key), value)
 
     def has_key(self, key):
-        if type(key) != type(""):
-            raise TypeError, "invalid key type"
+        key = str(key)
         return UserDict.UserDict.has_key(self, string.lower(key))
 
     def get(self, key, default):
-        if type(key) != type(""):
-            raise TypeError, "invalid key type"
-        if type(default) != type(""):
-            raise TypeError, "invalid default type"
-        if UserDict.UserDict.has_key(self, string.lower(key)):
-            return UserDict.UserDict.__getitem__(self, string.lower(key))
-        return default
+        key = str(key)
+        try:
+            rc = self.__getitem__(self, string.lower(key))
+        except KeyError:
+            rc = default
+        return rc
 
-    def __process(self, alt_ctx, lines, out):
+    def __process(self, alt_ctx, lines, out, depth):
         if type(lines) is type(""):
             lines = [ lines ]
+        if depth > 6:
+            print "recursive definition error:", lines[0]
+            return
         for line in lines:
             while line:
                 mo = Macro.search(line)
+                emo = ExecMacro.search(line)
+                if mo and emo and emo.start() < mo.start():
+                    mo = None
                 if mo:
                     key = mo.group(1)
                     out.append(line[:mo.start()])
                     if alt_ctx.has_key(key):
-                        alt_ctx.__process(self, alt_ctx[key], out)
+                        alt_ctx.__process(self, alt_ctx[key], out, depth + 1)
                     elif self.has_key(key):
-                        alt_ctx.__process(self, self[key], out)
+                        alt_ctx.__process(self, self[key], out, depth + 1)
                     elif alt_ctx.has_key("def" + key):
-                        alt_ctx.__process(self, alt_ctx["def"+key], out)
+                        alt_ctx.__process(self, alt_ctx["def"+key], out, depth + 1)
                     elif _verbose:  ### fix this ugly hack
                         print "WARNING-- missing key <%s>" % key
                     line = line[mo.end():]
+                elif emo:
+                    key = emo.group(1)
+                    out.append(line[:emo.start()])
+                    try:
+                        out.append(getattr(self["_module"], key)(self, alt_ctx))
+                    except KeyError:
+                        out.append(getattr(alt_ctx["_module"], key)(alt_ctx, self))
+                    line = line[emo.end():]
                 else:
                     out.append(line)
                     line = ''
+        depth -= 1
 
     def __add__(self, other):
+        # adding is defined strictly for applying defaults
         if not isinstance(other, Template):
             raise TypeError, 'can only "add" a Template to a Template'
         res = Template()
@@ -285,36 +304,75 @@ class Template(UserDict.UserDict):
         if not isinstance(other, Template):
             raise TypeError, 'can only "multiply" a Template by a Template'
         lst = []
-        self.__process(other, self["body"], lst)
+        self.__process(other, self["body"], lst, 0)
         return string.join(lst, "")
 
 
-def_ctx = Template()
-def_ctx["Date"] = time.strftime("%m/%d/%Y", time.localtime(time.time()))
-def_ctx["SrcDate"] = ""
-
-
 def LoadTemplate(template_file):
-    t_in = open(template_file, "r")
+    try:
+        t_in = open(template_file, "r")
+    except:
+        t_in = open("../" + template_file, "r")
     tmpl = Template(t_in)
     t_in.close()
     tmpl["_filename"] = template_file
     return tmpl
 
 
+def defaultctx():
+    try:
+        def_ctx = LoadTemplate(".default")
+    except:
+        def_ctx = Template()
+    
+    def_ctx["Date"] = time.strftime("%m/%d/%Y", time.localtime(time.time()))
+    def_ctx["SrcDate"] = ""
+
+    return def_ctx
+
+
+def _loadmodule(filename):
+    mod = Generic()
+    try:
+        fp = open(module_file, "r")
+        src = fp.read()
+        fp.close()
+        exec src in mod.__dict__
+    except IOError:
+        pass
+    try:
+        fp = open(filename, "r")
+        src = fp.read()
+        fp.close()
+        exec src in mod.__dict__
+    except IOError:
+        pass
+    return mod
+
+
 def MakeSite(tmpl, filename):
 
     try:
-        ext = tmpl["Extension"]
+        exts = tmpl["Extension"]
     except KeyError:
+        exts = "src html py"
+
+    extl = string.split(exts)
+
+    ext, tgtext, modext = (extl + ([ None ] * 3))[:3]
+
+    if not ext:
         ext = "src"
 
-    extl = string.split(ext)
-    if len(extl) > 1:
-        ext = extl[0]
-        tgtext = extl[1]
-    else:
+    if not tgtext:
         tgtext = "html"
+
+    if not modext:
+        modext = "py"
+
+    ext = "." + ext
+    tgtext = "." + tgtext
+    modext = "." + modext
 
     if filename and filename[-1 * len(ext):] != ext:
         ext = ""
@@ -322,18 +380,36 @@ def MakeSite(tmpl, filename):
     try:
         target = tmpl["Target"]
     except KeyError:
-        target = "./" 
+        try:
+            target = def_ctx["Target"]
+        except KeyError:
+            target = "./" 
 
     if filename:
         files = [ filename ]
     else:
-        files = glob.glob("*." + ext)
+        files = glob.glob("*" + ext)
+        files.sort()
 
     for infile in files:
 
-        outfile = target + infile[:-1 * len(ext)] + tgtext
+        rootname = infile[:-1 * len(ext)]
+
+        outfile = rootname + tgtext
+        if outfile[:1] == '$':
+            outfile = outfile[1:]
+        outfile = target + outfile
 
         msg = LoadTemplate(infile)
+
+        mod = _loadmodule(rootname + modext)
+
+        try:
+            msg = mod._prefilter(msg)
+        except AttributeError:
+            pass
+
+        msg["_module"] = mod
 
         try:
             fp = open(outfile, "r")
@@ -364,25 +440,32 @@ def MakeSite(tmpl, filename):
 
 if __name__ == '__main__':
 
-    (optlist, args) = getopt.getopt(sys.argv[1:], "fvpt:d:", \
-        [ "template=", "dir=", "pause", "force", "verbose" ])
+    (optlist, args) = getopt.getopt(sys.argv[1:], "fnvpt:d:", \
+        [ "template=", "module=", "dir=", "norc", "pause", "force", "verbose" ])
     
     usage = "Usage: makesite [ options ] [ filename...]\n\n" + \
             "Options: --template=file\n" + \
+            "         --module=file\n" + \
             "         --dir=directory\n" + \
             "         --pause\n" + \
             "         --verbose\n" + \
-            "         --force\n"
+            "         --force\n" + \
+            "         --norc\n"
     
-    template_file = "template.site"
+    template_file = "template.*"
+    module_file = "module.site"
+
     _directory = ""
     _pause = 0
     _force = 0
     _verbose = 0
+    _norc = 0
     
     for i in optlist:
         if i[0] == '--template' or i[0] == '-t':
             template_file = i[1]
+        elif i[0] == '--module':
+            module_file = i[1]
         elif i[0] == '--dir' or i[0] == '-d':
             _directory = i[1]
         elif i[0] == '--pause' or i[0] == '-p':
@@ -391,7 +474,10 @@ if __name__ == '__main__':
             force = 1
         elif i[0] == '--verbose' or i[0] == '-v':
             _verbose = 1
+        elif i[0] == '--norc' or i[0] == '-n':
+            _norc = 1
         else:
+            sys.stderr.write("\nArgument [%s] Not Recognized.\n\n" % i[0])
             sys.stderr.write(usage)
             sys.exit(1)
     
@@ -400,13 +486,28 @@ if __name__ == '__main__':
             print "change directory to", _directory
         os.chdir(_directory)
     
-    tmpl = LoadTemplate(template_file)
-    
-    if len(args) > 0:
-        for i in args:
-            MakeSite(tmpl, i)
-    else:
-        MakeSite(tmpl, None)
+    if not _norc and os.path.exists(".makesite"):
+        if _verbose:
+            print "running .makesite"
+        fp = open(".makesite", "r")
+        script = fp.read()
+        fp.close()
+        exec script in {}
+
+    def_ctx = defaultctx()
+
+    template_files = glob.glob(template_file)
+
+    for t in template_files:
+        print "Processing Template", t
+
+        tmpl = LoadTemplate(t)
+
+        if len(args) > 0:
+            for i in args:
+                MakeSite(tmpl, i)
+        else:
+            MakeSite(tmpl, None)
     
     if _pause:
         raw_input("\nPress ENTER to Continue... ")

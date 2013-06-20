@@ -2,11 +2,7 @@
 #
 # Software License
 # 
-# The majority of my software is published under a BSD-style license,
-# given below.  Please check the specific package you downloaded to
-# be sure that this license applies.
-# 
-# Copyright &copy; 2001, Chris Gonnerman
+# Copyright (c) 2001-2007, Chris Gonnerman
 # All rights reserved.
 # 
 # Redistribution and use in source and binary forms, with or without 
@@ -51,20 +47,27 @@ variable assignments:
     directory = "directory"         # publishing directory on server
     source = "source-directory"     # local directory containing pages
     passive = 0                     # or 1 to specify passive mode
+    mode = "ftp"                    # or "copy" to copy the files directly
+    lowername = 1                   # change names to lowercase
 
-publish.py publishes only pages that have changed sizes.  This means that
-sometimes a page that should be published won't be; if it is an HTML page
-you can just:
+.index should contain a valid repr() of a dictionary, where the
+keys are filenames and the values are lists containing the timestamps,
+as returned as element 8 of the stat tuple.  The values have to be
+stored in lists because we will be storing a temporary flag there.
 
-    echo >>filename.html
-
-to add a blank line at the end and force the file to publish.
+.index won't be found the first time through.
 """
 
 # my version numbers are usually strings
-__version__ = "1.4"
+__version__ = "1.8"
 
 import os, sys
+
+try:
+    import timeoutsocket
+    timeoutsocket.setDefaultSocketTimeout(60)
+except ImportError:
+    pass
 
 ##########################################################################
 #  NullFTP is used by the touch function
@@ -77,7 +80,79 @@ class NullFTP:
         return self.nullfunc
 
 ##########################################################################
-#  Load the .site file
+#  ZipFTP is used in zipping mode
+##########################################################################
+
+import zipfile, time
+
+class ZipFTP:
+    def __init__(self, fn):
+        self.filename = fn
+        self.zipfile = zipfile.ZipFile(fn, "w", zipfile.ZIP_DEFLATED)
+        self.dirpath = []
+    def mkd(self, d):
+        pass
+    def cwd(self, d):
+        if d == ".":
+            return
+        if d == "..":
+            self.dirpath = self.dirpath[:-1]
+        else:
+            self.dirpath.append(d)
+    def storbinary(self, cmd, file, blocksize = None):
+        zinfo = zipfile.ZipInfo()
+        zinfo.filename = '/'.join(self.dirpath + [ cmd[5:] ])
+        zinfo.compress_type = zipfile.ZIP_DEFLATED
+        zinfo.flag_bits = 0x08
+        try:
+            st = os.fstat(file.fileno())
+            zinfo.date_time = time.localtime(st[8])[:6]
+            zinfo.external_attr = 0x80000000 | (st[0] << 16)
+        except:
+            zinfo.date_time = (2002, 1, 1, 0, 0, 0)
+        self.zipfile.writestr(zinfo, file.read())
+    def voidcmd(self, cmd):
+        pass
+    def login(self, user, pwd):
+        pass
+    def set_pasv(self, mode):
+        pass
+    def delete(self, fname):
+        pass
+    def quit(self):
+        self.zipfile.close()
+
+##########################################################################
+#  CopyFTP is used in copy mode
+##########################################################################
+
+import shutil
+
+class CopyFTP:
+    def __init__(self):
+        pass
+    def mkd(self, d):
+        os.mkdir(d)
+    def cwd(self, d):
+        os.chdir(d)
+    def storbinary(self, cmd, file, blocksize = None):
+        fname = cmd[5:]
+        fp = open(fname, "w")
+        shutil.copyfileobj(file, fp)
+        fp.close()
+    def voidcmd(self, cmd):
+        pass
+    def login(self, user, pwd):
+        pass
+    def set_pasv(self, mode):
+        pass
+    def delete(self, fname):
+        os.remove(fname)
+    def quit(self):
+        pass
+
+##########################################################################
+#  Set Variables
 ##########################################################################
 
 user = ""
@@ -86,6 +161,46 @@ host = ""
 directory = ""
 source = ""
 passive = 0
+chmod = 0
+mode = "ftp"
+zip = None
+lowername = 0
+
+rc = 0
+
+##########################################################################
+#  Process command line options
+##########################################################################
+
+import getopt
+
+(optlist, args) = getopt.getopt(sys.argv[1:], "qvpt", \
+    [ "quiet", "verbose", "touch", "pause", "zip=" ])
+
+usage = "Usage: publish [ --quiet ] [ --verbose ] [ --touch ] [ --zip filename ] [ --pause ]\n"
+
+verbose = 0
+pause = 0
+
+for i in optlist:
+    if i[0] == '--touch' or i[0] == '-t':
+        mode = "touch"
+    elif i[0] == '--pause' or i[0] == '-p':
+        pause = 1
+    elif i[0] == '--verbose' or i[0] == '-v':
+        verbose = 1
+    elif i[0] == '--quiet' or i[0] == '-q':
+        verbose = -1
+    elif i[0] == '--zip':
+        zip = i[1]
+        mode = "zip"
+    else:
+        sys.stderr.write(usage)
+        sys.exit(1)
+
+##########################################################################
+#  Load the .site file
+##########################################################################
 
 if not os.path.isfile("./.site"):
     if os.path.isfile("../.site"):
@@ -95,66 +210,59 @@ try:
     execfile("./.site")
 except:
     sys.stderr.write("Can't Execute Site File ./.site\n")
+    import traceback
+    traceback.print_exc(file = sys.stderr)
+    if pause:
+        raw_input("\nPress ENTER to Continue... ")
     sys.exit(1)
-
-##########################################################################
-#  Load the .index file
-#
-#  .index should contain a valid repr() of a dictionary, where the
-#  keys are filenames and the values are lists containing the timestamps,
-#  as returned as element 8 of the stat tuple.  The values have to be
-#  stored in lists because we will be storing a temporary flag there.
-#  
-#  .index won't be found the first time through.
-##########################################################################
-
-try:
-    fp = open("./.index", "r")
-    indexdata = fp.read()
-    fp.close()
-    index = eval(indexdata)
-except:
-    index = {}
-
-import getopt
-
-(optlist, args) = getopt.getopt(sys.argv[1:], "pt", \
-    [ "touch", "pause" ])
-
-usage = "Usage: publish [ --touch ] [ --pause ]\n"
-
-touch = 0
-pause = 0
-
-for i in optlist:
-    if i[0] == '--touch' or i[0] == '-t':
-        touch = 1
-    elif i[0] == '--pause' or i[0] == '-p':
-        pause = 1
-    else:
-        sys.stderr.write(usage)
-        sys.exit(1)
 
 ##########################################################################
 #  Imports
 ##########################################################################
 
-from ftplib import FTP
+from ftplib import FTP, error_temp
 import glob, os.path, string
 
-def publish(path, ftp, leader, touch):
+
+##########################################################################
+#  Global Variables
+##########################################################################
+
+stack = []
+
+uploads = 0
+deletes = 0
+touches = 0
+
+
+##########################################################################
+#  Functions
+##########################################################################
+
+def publish(path, ftp, leader, mode):
+    global stack, uploads, deletes, touches
+
     d = os.path.basename(path)
-    print leader + "publishing directory " + d
+    if verbose >= 0:
+        print leader + "publishing directory " + d
+
+    stack.append(os.getcwd())
     os.chdir(d)
+
     if d[:1] == '%':
         d = d[1:]
+
     try:
         ftp.mkd(d)
     except:
         pass
+
     ftp.cwd(d)
 
-    for n in glob.glob("*"):
+    dirlist = glob.glob("*")
+    dirlist.sort()
+
+    for n in dirlist:
 
         if n == "RCS":
             continue
@@ -163,9 +271,11 @@ def publish(path, ftp, leader, touch):
         t = n
         if t[:1] == "%":
             t = t[1:]
+        if lowername:
+            t = t.lower()
 
         if os.path.isdir(n):
-            publish(key, ftp, leader+" ", touch)
+            publish(key, ftp, leader+" ", mode)
         else:
             if index.has_key(key):
                 oldstamp = index[key][0]
@@ -174,73 +284,131 @@ def publish(path, ftp, leader, touch):
 
             newstamp = os.stat(n)[8]
 
-            index[key] = [ newstamp, 1 ]
-
-            if touch:
-                print leader + "touching " + n
+            if mode == "touch":
+                if verbose >= 0:
+                    print leader + "touching " + n
+                touches += 1
             else:
                 if newstamp != oldstamp:
-                    print leader + "storing  " + n + " --> " + t
+                    if verbose >= 0:
+                        print leader + "storing  " + n + " --> " + t
                     fp = open(n, "rb")
-                    ftp.storbinary("STOR " + t, fp, 1024)
+                    try:
+                        ftp.storbinary("STOR " + t, fp, 1024)
+                    except error_temp:
+                        # try again, one time.
+                        ftp.storbinary("STOR " + t, fp, 1024)
                     fp.close()
-                else:
+                    if chmod:
+                        mode = os.stat(n)[0] & 0777
+                        ftp.voidcmd("SITE CHMOD " + oct(mode) + " " + t)
+                    uploads += 1
+                elif verbose > 0:
                     print leader + "skipping " + n
 
+            index[key] = [ newstamp, 1 ]
+
     if d != ".":
-        os.chdir("..")
-    ftp.cwd("..")
+        os.chdir(stack.pop())
+        ftp.cwd("..")
 
-if source:
-    print "changing local directory to " + source
-    os.chdir(source)
-
-print "logging on to " + host
-
-if touch:
-    ftp = NullFTP()
-else:
-    ftp = FTP(host)
-
-ftp.login(user, pwd)
-
-ftp.set_pasv(passive)
-
-print "set directory to " + directory
+### main body ###
 
 try:
-    ftp.mkd(directory)
-except:
-    pass
+    if source:
+        if verbose >= 0:
+            print "changing local directory to " + source
+        os.chdir(source)
 
-ftp.cwd(directory)
+    # load the index
 
-publish(".", ftp, " ", touch)
+    index = {}
 
-print "removing outdated files"
-ftp.cwd(directory)
-for i in index.keys():
-    if len(index[i]) < 2:
-        print "removing", i
+    if zip is None:
         try:
-            ftp.delete(i)
+            fp = open("./.index", "r")
+            indexdata = fp.read()
+            fp.close()
+            index = eval(indexdata)
         except:
             pass
-        del index[i]
+
+    if mode == "touch":
+        ftp = NullFTP()
+    elif mode == "zip":
+        ftp = ZipFTP(zip)
+    elif mode == "copy":
+        ftp = CopyFTP()
     else:
-        index[i] = index[i][:1]
+        if verbose >= 0:
+            print "logging on to " + host
+        ftp = FTP(host)
 
-print "saving .index"
+    ftp.login(user, pwd)
 
-fp = open("./.index", "w")
-fp.write(repr(index))
-fp.close()
+    ftp.set_pasv(passive)
 
-print "done."
+    if mode != "zip":
+        if verbose >= 0:
+            print "set directory to " + directory
+        try:
+            ftp.mkd(directory)
+        except:
+            pass
+        ftp.cwd(directory)
 
-ftp.quit()
+    publish(".", ftp, " ", mode)
+
+    if not zip:
+        if verbose >= 0:
+            print "removing outdated files"
+        for i in index.keys():
+            if len(index[i]) < 2:
+                if verbose >= 0:
+                    print "removing", i
+                try:
+                    ftp.delete(i)
+                except:
+                    pass
+                del index[i]
+                deletes += 1
+            else:
+                index[i] = index[i][:1]
+
+    if verbose >= 0:
+        print "done."
+
+    if uploads > 0:
+        print "uploaded %d" % uploads
+
+    if touches > 0:
+        print "touched %d" % touches
+
+    if deletes > 0:
+        print "deleted %d" % deletes
+
+    ftp.quit()
+
+except:
+    import traceback
+    traceback.print_exc(file = sys.stdout)
+
+    # rewind
+
+    while stack:
+        os.chdir(stack.pop())
+
+    rc = 1
+
+if mode != "zip":
+    print "saving .index"
+    fp = open("./.index", "w")
+    fp.write(repr(index))
+    fp.close()
 
 if pause:
     raw_input("\nPress ENTER to Continue... ")
+
+sys.exit(rc)
 
 # end of script.
