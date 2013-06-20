@@ -1,0 +1,123 @@
+Python Web Publishing System
+
+Here is a software package I have put together for my own use and for the 
+use of my customers; I am releasing it as open source for all to use.
+
+There are two related tools here, which can be used together or separately: 
+makesite.py, the site-assembler (a simple templating system), and publish.py, 
+a website publisher using FTP.
+
+Installation
+
+Read the usage instructions below before installing.  You will probably want
+to place these scripts in your /usr/local/bin (or similar) directory.
+
+Software
+
+makesite.py 1.1 uses a template file and one or more source files to build 
+standardized web pages; variables may be set in the template and/or the source 
+file, and then substituted in text in either file using  
+syntax.  The QChunk.py module, below, is required for this script. 
+
+Changes:
+1.1 uses time-stamps from the files to determine whether or not to build the 
+file, similar to the standard make command.  This results in less unnecessary 
+uploading!
+
+publish.py 1.3, a site publisher using FTP.
+
+Changes:
+Version 1.3:  Emulates the "magic .site file" by automatically calling 
+os.chdir("..") if there is not a ./.site file but there is a ../.site file.
+Version 1.2:  Adds a passive option to .site (to allow control of whether or 
+not to use passive FTP mode).
+Version 1.1:  Uses a time-stamp file for more accurate (and faster) upload 
+decisions.
+
+.site, a sample ".site" file for publish.py
+
+QChunk.py, handler for dictionary-like objects (with string-only key and data 
+items) which includes load and save functionality. Python has better data 
+structures and file handlers, but this is handy for simple jobs. This used to 
+be called Chunk.py, but on case-insensitive Windoze it caused problems.  If you
+are using the old Chunk.py and want to update makesite.py, above, you need to 
+download and install this new module too.
+
+Usage
+
+Generally, I create a directory for the website, and under that I create a 
+directory named .master to contain the template sources.  I might also have an 
+images folder, etc.  In the .master folder is the a template file (by default 
+template.site) and one or more source files (with .src extensions).  The 
+publish.py script needs a .site file in the website directory.  It generally 
+looks like this:
+
+    D   website
+    F       .site
+    D       .master
+    F           template.site
+    F           index.src
+    F           anotherpage.src
+    D       images
+    F           background.gif
+    F           an_icon.gif
+    F           another_icon.gif
+
+Assuming I am using a Unixoid OS, I might install publish.py and makesite.py 
+in /usr/local/bin; in this case I would edit the template.site and/or the 
+source files, and type
+
+    ~/website/.master $ makesite.py
+
+makesite.py with no options loads the template.site file, then looks for files 
+with the .src extension, and combines them, putting the results in the target 
+directory.  The template.site file and the source files are formatted similar 
+to rfc822 messages: header lines formatted as: key: value, a blank line, and 
+body text.  The body section is substituted into the template file where a 
+"magic comment" is found:
+
+    <!--%Body%-->
+
+Other magic comments are substituted with header values from the source file.  
+If the name cannot be found in the source file dictionary, it is searched in 
+the template directory, and then in an internal dictionary (presently 
+containing only "date").  Further, values are themselves substituted from these 
+dictionaries, so that values can contain "magic comments" also.  (While I am 
+proud of this particular recursive feature I can't say that I've ever used 
+it...)
+
+The main benefit of all these gyrations is that my entire site can have a 
+standardized appearance.
+
+Anyway, after I have built the target files, I publish them:
+
+    ~/website/.master $ publish.py
+    
+The main .site file (in the ~/website directory in this example) contains the 
+username, password, hostname, and remote directory to publish into.  publish.py
+recursively publishes all subdirectories, but it specifically ignores 
+directories and files starting with a period (so that the .master directory, 
+.site file, etc. are not published).  A normal .site file looks like this:
+
+    #
+    # sample .site file for publish.py
+    #
+    # fill in required values as shown.
+    # use "." for directory if no
+    # directory change is needed on the remote
+    # server. use "" for source
+    # if the current directory is the source
+    # directory.
+    #
+    # save as .site in the top directory of
+    # the local web site copy.
+    #
+    
+    user = "username"
+    pwd = "password"
+    host = "hostname"
+    directory = "directory"
+    source = "source-directory"
+    
+    # end of file.
+
