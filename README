@@ -14,17 +14,15 @@ to place these scripts in your /usr/local/bin (or similar) directory.
 
 Software
 
-makesite.py 1.1 uses a template file and one or more source files to build 
-standardized web pages; variables may be set in the template and/or the source 
-file, and then substituted in text in either file using  
-syntax.  The QChunk.py module, below, is required for this script. 
+makesite.py 2.0 uses a template file (or a group of template files) and one or
+more source files to build standardized web pages; variables may be set in the
+template and/or the source file, and then substituted in text in either file
+using <!--%VariableName%--> syntax.
 
-Changes:
-1.1 uses time-stamps from the files to determine whether or not to build the 
-file, similar to the standard make command.  This results in less unnecessary 
-uploading!
+makesite.py uses the timestamps from the files to determine whether or not to
+build the file, similar to the standard make command.
 
-publish.py 1.3, a site publisher using FTP.
+publish.py 2.0, a site publisher using FTP.
 
 Changes:
 Version 1.3:  Emulates the "magic .site file" by automatically calling 
@@ -52,16 +50,16 @@ template.site) and one or more source files (with .src extensions).  The
 publish.py script needs a .site file in the website directory.  It generally 
 looks like this:
 
-    D   website
-    F       .site
-    D       .master
-    F           template.site
-    F           index.src
-    F           anotherpage.src
-    D       images
-    F           background.gif
-    F           an_icon.gif
-    F           another_icon.gif
+    website
+        .site
+        .master
+            template.site
+            index.src
+            anotherpage.src
+        images
+            background.gif
+            an_icon.gif
+            another_icon.gif
 
 Assuming I am using a Unixoid OS, I might install publish.py and makesite.py 
 in /usr/local/bin; in this case I would edit the template.site and/or the 
